@@ -13,7 +13,11 @@ from datetime import datetime
 
 from config import config
 from agent_email_workflow import run_email_workflow
-from agent_email_query import load_vector_store, query_emails
+from agent_email_query import (
+    load_vector_store,
+    create_conversational_query_chain,
+    query_emails,
+)
 
 
 def print_banner():
@@ -122,26 +126,31 @@ def cmd_query(interactive=True, question=None):
         print("Loading vector store...")
         vectorstore = load_vector_store()
         count = vectorstore._collection.count()
-        print(f"✓ Loaded {count} emails\n")
+        print(f"✓ Loaded {count} emails")
+        
+        # NEW: Create the conversational chain
+        qa_chain = create_conversational_query_chain(vectorstore)
+        print("✓ Initialized conversational chain\n")
+
 
         if not interactive and question:
             # Single query mode
             print(f"Question: {question}\n")
             print("Searching and generating response...\n")
-            response = query_emails(vectorstore, question)
+            response = query_emails(qa_chain, question)
             print(f"Answer: {response}\n")
             return
 
         # Interactive mode
         print("=" * 60)
-        print("INTERACTIVE QUERY MODE")
+        print("INTERACTIVE QUERY MODE (with conversational memory)")
         print("=" * 60)
 
         # Example queries
         example_queries = [
             "How many emails did I receive?",
-            "Summarize my emails",
-            "Did I receive any important emails?",
+            "Who sent the email about the project deadline?",
+            "What was the subject of the email from that sender?", 
             "List all senders",
         ]
 
@@ -166,7 +175,7 @@ def cmd_query(interactive=True, question=None):
                     continue
 
                 print("\nSearching and generating response...\n")
-                response = query_emails(vectorstore, user_input)
+                response = query_emails(qa_chain, user_input)
                 print(f"Answer: {response}\n")
                 print("-" * 60 + "\n")
 
@@ -203,16 +212,19 @@ def cmd_workflow():
         print("\n" + "=" * 60)
         print("Phase 2: Interactive Query Mode")
         print("=" * 60 + "\n")
+        
+        qa_chain = create_conversational_query_chain(vectorstore)
+
 
         # Step 2: Query mode
         count = vectorstore._collection.count()
-        print(f"✓ Ready to query {count} emails\n")
+        print(f"✓ Ready to query {count} emails (with memory)\n")
 
         # Example queries
         example_queries = [
             "How many emails did I receive?",
-            "Summarize my emails",
-            "Did I receive any important emails?",
+            "Who sent the email about the project deadline?",
+            "What was the subject of the email from that sender?",
             "List all senders",
         ]
 
@@ -237,7 +249,7 @@ def cmd_workflow():
                     continue
 
                 print("\nSearching and generating response...\n")
-                response = query_emails(vectorstore, user_input)
+                response = query_emails(qa_chain, user_input)
                 print(f"Answer: {response}\n")
                 print("-" * 60 + "\n")
 
@@ -276,7 +288,7 @@ Examples:
   # Query emails interactively
   python email_assistant.py query
 
-  # Query with a single question
+  # Query with a single question (no memory)
   python email_assistant.py query --question "Summarize my emails"
 
   # Run complete workflow (fetch + query)

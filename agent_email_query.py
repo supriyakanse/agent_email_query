@@ -3,6 +3,8 @@ import os
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama, OllamaEmbeddings
+from langchain.chains import ConversationalRetrievalChain
+from langchain.memory import ConversationBufferMemory
 
 # Import configuration
 from config import config
@@ -19,6 +21,20 @@ llm = ChatOllama(
     temperature=config.LLM_TEMPERATURE,
     base_url=config.OLLAMA_BASE_URL,
 )
+
+# Define the custom prompt for the QA part of the chain
+CUSTOM_PROMPT_TEMPLATE = """You are an intelligent email assistant. Answer the user's question based ONLY on the provided chat history and the retrieved email context.
+Be concise, accurate, and helpful. If the context doesn't contain enough information to answer the question, state that you don't have enough information from the emails, but try to use the chat history to provide a conversational answer if possible.
+
+Chat History:
+{chat_history}
+
+Retrieved Email Context:
+{context}
+
+Question: {question}
+
+Answer:"""
 
 
 def load_vector_store(persist_directory=None):
@@ -54,60 +70,58 @@ def load_vector_store(persist_directory=None):
         raise Exception(f"Failed to load vector store: {e}")
 
 
-def query_emails(vectorstore, user_query, k=None):
+def create_conversational_query_chain(vectorstore):
     """
-    Query the email vector store and generate a natural language response.
+    Create a ConversationalRetrievalChain with memory for querying emails.
 
     Args:
         vectorstore: ChromaDB vector store instance
+
+    Returns:
+        ConversationalRetrievalChain instance
+    """
+    # Create a memory buffer to store chat history
+    memory = ConversationBufferMemory(
+        memory_key="chat_history",
+        return_messages=True,  # Important for some LLMs/chains
+        output_key='answer'
+    )
+
+    # Create the retriever from the vectorstore
+    retriever = vectorstore.as_retriever(
+        search_kwargs={"k": config.DEFAULT_RETRIEVAL_COUNT}
+    )
+    
+    # Create the prompt template for the final QA step
+    qa_prompt = ChatPromptTemplate.from_template(CUSTOM_PROMPT_TEMPLATE)
+
+    # Create the ConversationalRetrievalChain
+    qa_chain = ConversationalRetrievalChain.from_llm(
+        llm=llm,
+        retriever=retriever,
+        memory=memory,
+        return_source_documents=False,
+        combine_docs_chain_kwargs={"prompt": qa_prompt},
+    )
+
+    return qa_chain
+
+
+def query_emails(qa_chain, user_query):
+    """
+    Query the email vector store using the created conversational chain.
+
+    Args:
+        qa_chain: The ConversationalRetrievalChain instance
         user_query: User's question about emails
-        k: Number of relevant emails to retrieve (uses config if not provided)
 
     Returns:
         Natural language response from the LLM
-
-    Raises:
-        Exception: If query processing fails
     """
-    k = k or config.DEFAULT_RETRIEVAL_COUNT
-
     try:
-        # Retrieve relevant emails using similarity search
-        relevant_docs = vectorstore.similarity_search(user_query, k=k)
-
-        # Format retrieved emails as context
-        context = ""
-        for i, doc in enumerate(relevant_docs, 1):
-            context += f"\n--- Email {i} ---\n"
-            context += doc.page_content
-            context += "\n"
-
-        # Create prompt template
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """You are an intelligent email assistant. Answer the user's question based on the provided email context.
-Be concise, accurate, and helpful. If the context doesn't contain enough information to answer the question, say so.
-When counting or listing emails, be specific and accurate based on the provided context.""",
-                ),
-                (
-                    "user",
-                    """Context (Retrieved Emails):
-{context}
-
-Question: {question}
-
-Answer:""",
-                ),
-            ]
-        )
-
-        # Generate response
-        chain = prompt | llm
-        response = chain.invoke({"context": context, "question": user_query})
-
-        return response.content
+        # The chain handles everything: history, retrieval, and generation
+        result = qa_chain.invoke({"question": user_query})
+        return result['answer']
 
     except Exception as e:
         raise Exception(f"Failed to query emails: {e}")
@@ -118,6 +132,9 @@ if __name__ == "__main__":
         # Load the vector store
         print("Loading vector store...")
         vectorstore = load_vector_store()
+        
+        # Create the conversational chain
+        qa_chain = create_conversational_query_chain(vectorstore)
 
         # Get collection count
         count = vectorstore._collection.count()
@@ -128,8 +145,8 @@ if __name__ == "__main__":
         # Example queries
         example_queries = [
             "How many emails did I receive?",
-            "Summarize my emails",
-            "Did I receive any important emails?",
+            "Who sent me the email about the project deadline?",
+            "What was the subject of the email from that sender?",
         ]
 
         print("Example queries you can try:")
@@ -153,7 +170,7 @@ if __name__ == "__main__":
 
             print("\nSearching and generating response...\n")
             try:
-                response = query_emails(vectorstore, user_input)
+                response = query_emails(qa_chain, user_input)
                 print(f"Answer: {response}\n")
             except Exception as e:
                 print(f"❌ Error: {e}\n")
