@@ -1,0 +1,27 @@
+# --- Dependencies and Environments ---
+venv/
+.venv/
+env/
+.env/
+lib/
+include/
+bin/
+
+# --- Bytecode and Compiled Files ---
+*.pyc
+__pycache__/
+*.egg-info/
+build/
+dist/
+
+# --- Sensitive Files ---
+.env
+db.sqlite3
+
+# --- IDE and OS Files ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+chroma_store/

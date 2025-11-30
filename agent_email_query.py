@@ -1,0 +1,169 @@
+import os
+
+from langchain_community.vectorstores import Chroma
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_ollama import ChatOllama, OllamaEmbeddings
+
+# Import configuration
+from config import config
+
+# Initialize embeddings (same as in agent_email_vector.py)
+embeddings = OllamaEmbeddings(
+    model=config.OLLAMA_EMBEDDING_MODEL,
+    base_url=config.OLLAMA_BASE_URL,
+)
+
+# Initialize LLM
+llm = ChatOllama(
+    model=config.OLLAMA_LLM_MODEL,
+    temperature=config.LLM_TEMPERATURE,
+    base_url=config.OLLAMA_BASE_URL,
+)
+
+
+def load_vector_store(persist_directory=None):
+    """
+    Load the existing ChromaDB vector store from disk.
+
+    Args:
+        persist_directory: Directory where ChromaDB data is stored (uses config if not provided)
+
+    Returns:
+        Loaded Chroma vectorstore instance
+
+    Raises:
+        FileNotFoundError: If vector store doesn't exist
+    """
+    persist_dir = persist_directory or config.CHROMA_PERSIST_DIRECTORY
+
+    # Check if vector store exists
+    if not os.path.exists(persist_dir):
+        raise FileNotFoundError(
+            f"Vector store not found at '{persist_dir}'. "
+            "Please run the workflow to fetch and index emails first."
+        )
+
+    try:
+        vectorstore = Chroma(
+            collection_name=config.CHROMA_COLLECTION_NAME,
+            embedding_function=embeddings,
+            persist_directory=persist_dir,
+        )
+        return vectorstore
+    except Exception as e:
+        raise Exception(f"Failed to load vector store: {e}")
+
+
+def query_emails(vectorstore, user_query, k=None):
+    """
+    Query the email vector store and generate a natural language response.
+
+    Args:
+        vectorstore: ChromaDB vector store instance
+        user_query: User's question about emails
+        k: Number of relevant emails to retrieve (uses config if not provided)
+
+    Returns:
+        Natural language response from the LLM
+
+    Raises:
+        Exception: If query processing fails
+    """
+    k = k or config.DEFAULT_RETRIEVAL_COUNT
+
+    try:
+        # Retrieve relevant emails using similarity search
+        relevant_docs = vectorstore.similarity_search(user_query, k=k)
+
+        # Format retrieved emails as context
+        context = ""
+        for i, doc in enumerate(relevant_docs, 1):
+            context += f"\n--- Email {i} ---\n"
+            context += doc.page_content
+            context += "\n"
+
+        # Create prompt template
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """You are an intelligent email assistant. Answer the user's question based on the provided email context.
+Be concise, accurate, and helpful. If the context doesn't contain enough information to answer the question, say so.
+When counting or listing emails, be specific and accurate based on the provided context.""",
+                ),
+                (
+                    "user",
+                    """Context (Retrieved Emails):
+{context}
+
+Question: {question}
+
+Answer:""",
+                ),
+            ]
+        )
+
+        # Generate response
+        chain = prompt | llm
+        response = chain.invoke({"context": context, "question": user_query})
+
+        return response.content
+
+    except Exception as e:
+        raise Exception(f"Failed to query emails: {e}")
+
+
+if __name__ == "__main__":
+    try:
+        # Load the vector store
+        print("Loading vector store...")
+        vectorstore = load_vector_store()
+
+        # Get collection count
+        count = vectorstore._collection.count()
+        print(f"✓ Vector store loaded successfully")
+        print(f"✓ Total emails in store: {count}")
+        print("\n" + "=" * 50)
+
+        # Example queries
+        example_queries = [
+            "How many emails did I receive?",
+            "Summarize my emails",
+            "Did I receive any important emails?",
+        ]
+
+        print("Example queries you can try:")
+        for i, q in enumerate(example_queries, 1):
+            print(f"  {i}. {q}")
+
+        print("=" * 50 + "\n")
+
+        # Interactive query loop
+        while True:
+            user_input = input(
+                "Ask a question about your emails (or 'quit' to exit): "
+            ).strip()
+
+            if user_input.lower() in ["quit", "exit", "q"]:
+                print("Goodbye!")
+                break
+
+            if not user_input:
+                continue
+
+            print("\nSearching and generating response...\n")
+            try:
+                response = query_emails(vectorstore, user_input)
+                print(f"Answer: {response}\n")
+            except Exception as e:
+                print(f"❌ Error: {e}\n")
+
+            print("-" * 50 + "\n")
+
+    except FileNotFoundError as e:
+        print(f"\n❌ {e}")
+        print("\nPlease run the email workflow first to fetch and index emails.")
+        exit(1)
+    except Exception as e:
+        print(f"\n❌ Failed to load vector store: {e}")
+        exit(1)
